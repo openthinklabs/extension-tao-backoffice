@@ -20,69 +20,59 @@
 
 declare(strict_types=1);
 
-namespace oat\taoBackOffice\model\lists;
+namespace oat\taoBackOffice\model\ListElement;
 
 use oat\tao\model\Lists\Business\Service\ValueCollectionService;
-use oat\taoBackOffice\model\lists\Service\ListDeleter;
-use oat\generis\model\resource\Repository\ClassRepository;
+use oat\taoBackOffice\model\ListElement\Service\ListElementsFinder;
 use oat\taoBackOffice\model\ListElement\Service\ListElementsDeleter;
+use oat\tao\model\Lists\DataAccess\Repository\RdfValueCollectionRepository;
+use oat\tao\model\Lists\DataAccess\Repository\RdsValueCollectionRepository;
 use oat\generis\model\DependencyInjection\ContainerServiceProviderInterface;
 use oat\tao\model\Lists\Business\Specification\RemoteListClassSpecification;
-use oat\tao\model\Lists\DataAccess\Repository\ParentPropertyListCachedRepository;
-use oat\taoBackOffice\model\lists\Service\ListUpdater;
 use Symfony\Component\DependencyInjection\Loader\Configurator\ContainerConfigurator;
 
 use function Symfony\Component\DependencyInjection\Loader\Configurator\env;
 use function Symfony\Component\DependencyInjection\Loader\Configurator\service;
 
-class ListServiceProvider implements ContainerServiceProviderInterface
+class ListElementServiceProvider implements ContainerServiceProviderInterface
 {
     public function __invoke(ContainerConfigurator $configurator): void
     {
         $services = $configurator->services();
         $parameters = $configurator->parameters();
 
-        $parameters->set('LOCAL_LIST_MAX_ITEMS', 1000);
+        $parameters->set('LOCAL_LIST_PAGE_SIZE', 20);
+        $parameters->set('REMOTE_LIST_PAGE_SIZE', 20);
 
         $services
-            ->set(ListService::class, ListService::class)
-            ->public()
-            ->factory(ListService::class . '::singleton')
-            ->call('setMaxItems', [
-                env('LOCAL_LIST_MAX_ITEMS')
-                    ->default('LOCAL_LIST_MAX_ITEMS')
-                    ->int()
-            ]);
-
-        $services
-            ->set(ListCreator::class, ListCreator::class)
+            ->set(ListElementsFinder::class, ListElementsFinder::class)
             ->public()
             ->args(
                 [
-                    service(ListService::class),
                     service(RemoteListClassSpecification::class),
-                ]
-            );
-
-        $services
-            ->set(ListDeleter::class, ListDeleter::class)
-            ->public()
-            ->args(
-                [
-                    service(ListElementsDeleter::class),
-                    service(RemoteListClassSpecification::class),
-                    service(ParentPropertyListCachedRepository::class),
-                    service(ClassRepository::class),
-                ]
-            );
-
-        $services
-            ->set(ListUpdater::class, ListUpdater::class)
-            ->public()
-            ->args(
-                [
                     service(ValueCollectionService::class),
-                    service(ListService::class),
+                    env('LOCAL_LIST_PAGE_SIZE')
+                        ->default('LOCAL_LIST_PAGE_SIZE')
+                        ->int(),
+                    env('REMOTE_LIST_PAGE_SIZE')
+                        ->default('REMOTE_LIST_PAGE_SIZE')
+                        ->int(),
+                ]
+            );
+
+        $services
+            ->set(ListElementsDeleter::class, ListElementsDeleter::class)
+            ->public()
+            ->call(
+                'addRepository',
+                [
+                    service(RdfValueCollectionRepository::SERVICE_ID),
+                ]
+            )
+            ->call(
+                'addRepository',
+                [
+                    service(RdsValueCollectionRepository::SERVICE_ID),
                 ]
             );
     }

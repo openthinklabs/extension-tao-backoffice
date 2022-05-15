@@ -1,4 +1,8 @@
 @import "inc/bootstrap";
+@keyframes rota {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
 
 .list-container {
   .container-content {
@@ -45,6 +49,28 @@
     }
   }
 
+  .add-button-container {
+    display: block;
+    float: right;
+    position: relative;
+
+    .tooltip-container {
+      width: 100%;
+      height: 100%;
+      position: absolute;
+    }
+
+    .tooltip-hidden {
+      display: none;
+    }
+
+    .tooltipstered {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+  }
+
   .edit-uri {
     display: flex;
     color: initial;
@@ -70,6 +96,23 @@
           display: flex;
         }
       }
+    }
+  }
+  .pagination-container {
+    display: flex;
+    justify-content: space-between;
+    padding: 0 5px;
+    > span {
+      color: #838383;
+    }
+    .icon-loop {
+      display: inline-block;
+      color: #3e7da7;
+      font-size: 1.25rem;
+      margin-right: 5px;
+    }
+    .rotate {
+      animation: rota 4s linear infinite;
     }
   }
 }

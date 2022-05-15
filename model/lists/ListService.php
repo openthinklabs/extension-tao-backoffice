@@ -15,46 +15,44 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  *
- * Copyright (c) 2018 (original work) Open Assessment Technologies SA;
- *
- *
+ * Copyright (c) 2018-2021 (original work) Open Assessment Technologies SA;
  */
+
+declare(strict_types=1);
 
 namespace oat\taoBackOffice\model\lists;
 
+use Throwable;
+use tao_models_classes_ListService;
+use Psr\Container\ContainerInterface;
 use core_kernel_classes_Class as RdfClass;
-use core_kernel_persistence_Exception;
 use oat\generis\model\kernel\uri\UriProvider;
 use oat\tao\model\Lists\Business\Domain\Value;
+use oat\taoBackOffice\model\lists\Service\ListDeleter;
 use oat\tao\model\Lists\Business\Domain\ValueCollection;
-use oat\tao\model\Lists\Business\Domain\ValueCollectionSearchRequest;
-use oat\tao\model\Lists\Business\Input\ValueCollectionDeleteInput;
-use oat\tao\model\Lists\Business\Input\ValueCollectionSearchInput;
-use oat\tao\model\Lists\Business\Service\RemoteSourcedListOntology;
+use oat\tao\model\Specification\ClassSpecificationInterface;
 use oat\tao\model\Lists\Business\Service\ValueCollectionService;
+use oat\taoBackOffice\model\lists\Contract\ListDeleterInterface;
+use oat\tao\model\Lists\Business\Input\ValueCollectionSearchInput;
+use oat\tao\model\Lists\Business\Domain\ValueCollectionSearchRequest;
+use oat\tao\model\Lists\Business\Specification\RemoteListClassSpecification;
+use oat\tao\model\Lists\Business\Specification\EditableListClassSpecification;
 use oat\tao\model\Lists\DataAccess\Repository\ParentPropertyListCachedRepository;
-use oat\tao\model\TaoOntology;
-use tao_models_classes_LanguageService;
-use tao_models_classes_ListService;
 
-/**
- * Class ListService
- */
 class ListService extends tao_models_classes_ListService
 {
+    /** @var int */
+    private $maxItems = 1000;
+
     /**
      * Whenever or not a list is editable
      * The Language list should not be editable.
      *
-     * @param RdfClass $listClass
-     *
-     * @return boolean
-     * @todo Make two different kind of lists: system list that are not editable and usual list.
+     * @return bool
      */
     public function isEditable(RdfClass $listClass)
     {
-        return $listClass->isSubClassOf($this->getClass(TaoOntology::CLASS_URI_LIST))
-            && $listClass->getUri() !== tao_models_classes_LanguageService::CLASS_URI_LANGUAGES;
+        return $this->getEditableListClassSpecification()->isSatisfiedBy($listClass);
     }
 
     public function getListElement(RdfClass $listClass, $uri)
@@ -75,6 +73,7 @@ class ListService extends tao_models_classes_ListService
     {
         $request = new ValueCollectionSearchRequest();
         $request->setValueCollectionUri($listClass->getUri());
+
         if ($limit) {
             $request->setLimit($limit);
         }
@@ -86,43 +85,51 @@ class ListService extends tao_models_classes_ListService
         return $result->getIterator();
     }
 
+    public function getMaxItems(): int
+    {
+        return $this->maxItems;
+    }
+
+    public function setMaxItems(int $value): self
+    {
+        $this->maxItems = $value;
+        return $this;
+    }
+
     /**
-     * @param RdfClass $listClass
+     * @deprecated Use \oat\taoBackOffice\model\lists\Service\ListDeleter::delete()
      *
      * @return bool
      */
     public function removeList(RdfClass $listClass)
     {
-        $this->getValueService()->delete(
-            new ValueCollectionDeleteInput($listClass->getUri())
-        );
+        try {
+            $this->getListDeleter()->delete($listClass);
 
-        if ($this->isRemote($listClass)) {
-            $this->getParentPropertyListCachedRepository()->deleteCache(
-                [
-                    'listUri' => $listClass->getUri()
-                ]
-            );
+            return true;
+        } catch (Throwable $exception) {
+            return false;
         }
-
-        return $listClass->delete();
     }
 
+    /**
+     * @param string $label
+     *
+     * @return void
+     */
     public function createListElement(RdfClass $listClass, $label = '')
     {
-        $newUri = $this->createUri();
-
         $valueCollection = new ValueCollection(
             $listClass->getUri(),
-            new Value(null, $newUri, $label)
+            new Value(null, $this->createUri(), $label)
         );
 
         $this->getValueService()->persist($valueCollection);
     }
 
-    private function getValueService(): ValueCollectionService
+    public function isRemote(RdfClass $listClass): bool
     {
-        return $this->getServiceLocator()->get(ValueCollectionService::class);
+        return $this->getRemoteListClassSpecification()->isSatisfiedBy($listClass);
     }
 
     private function createUri(): string
@@ -130,23 +137,33 @@ class ListService extends tao_models_classes_ListService
         return $this->getServiceLocator()->get(UriProvider::class)->provide();
     }
 
-    /**
-     * @param RdfClass $listClass
-     *
-     * @return bool
-     * @throws core_kernel_persistence_Exception
-     */
-    public function isRemote(RdfClass $listClass): bool
+    private function getValueService(): ValueCollectionService
     {
-        $type = $listClass->getOnePropertyValue(
-            $listClass->getProperty(RemoteSourcedListOntology::PROPERTY_LIST_TYPE)
-        );
-
-        return $type && ($type->getUri() === RemoteSourcedListOntology::LIST_TYPE_REMOTE);
+        return $this->getServiceLocator()->get(ValueCollectionService::class);
     }
 
     private function getParentPropertyListCachedRepository(): ParentPropertyListCachedRepository
     {
         return $this->getServiceLocator()->get(ParentPropertyListCachedRepository::class);
+    }
+
+    private function getRemoteListClassSpecification(): ClassSpecificationInterface
+    {
+        return $this->getContainer()->get(RemoteListClassSpecification::class);
+    }
+
+    private function getEditableListClassSpecification(): ClassSpecificationInterface
+    {
+        return $this->getContainer()->get(EditableListClassSpecification::class);
+    }
+
+    private function getListDeleter(): ListDeleterInterface
+    {
+        return $this->getContainer()->get(ListDeleter::class);
+    }
+
+    private function getContainer(): ContainerInterface
+    {
+        return $this->getServiceLocator()->getContainer();
     }
 }
