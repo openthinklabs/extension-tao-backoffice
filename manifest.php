@@ -1,8 +1,11 @@
 <?php
 
-use oat\taoBackOffice\controller\Redirector;
-use oat\taoBackOffice\model\lists\ListServiceProvider;
 use oat\tao\model\user\TaoRoles;
+use oat\taoBackOffice\controller\Lists;
+use oat\taoBackOffice\controller\Redirector;
+use oat\tao\model\accessControl\func\AccessRule;
+use oat\taoBackOffice\model\lists\ListServiceProvider;
+use oat\taoBackOffice\model\ListElement\ListElementServiceProvider;
 
 /**
  * This program is free software; you can redistribute it and/or
@@ -19,9 +22,7 @@ use oat\tao\model\user\TaoRoles;
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  *
- * Copyright (c) 2015 (original work) Open Assessment Technologies SA;
- *
- *
+ * Copyright (c) 2015-2021 (original work) Open Assessment Technologies SA;
  */
 
 return [
@@ -32,9 +33,21 @@ return [
     'author' => 'Open Assessment Technologies SA',
     'managementRole' => 'http://www.tao.lu/Ontologies/generis.rdf#taoBackOfficeManager',
     'acl' => [
-        ['grant', 'http://www.tao.lu/Ontologies/generis.rdf#taoBackOfficeManager', ['ext' => 'taoBackOffice']],
-        ['grant', 'http://www.tao.lu/Ontologies/TAO.rdf#PropertyManagerRole', ['controller' => 'oat\taoBackOffice\controller\Lists']],
-        ['grant', TaoRoles::BACK_OFFICE, Redirector::class . '@redirectTaskToInstance'],
+        [
+            AccessRule::GRANT,
+            'http://www.tao.lu/Ontologies/generis.rdf#taoBackOfficeManager',
+            ['ext' => 'taoBackOffice'],
+        ],
+        [
+            AccessRule::GRANT,
+            TaoRoles::PROPERTY_MANAGER,
+            ['act' => Lists::class .'@getListElements'],
+        ],
+        [
+            AccessRule::GRANT,
+            TaoRoles::BACK_OFFICE,
+            Redirector::class . '@redirectTaskToInstance',
+        ],
     ],
     'install' => [
         'rdf' => [
@@ -52,7 +65,7 @@ return [
     'update' => 'oat\taoBackOffice\scripts\update\Updater',
     'constants' => [
         # views directory
-        "DIR_VIEWS" => __DIR__ . DIRECTORY_SEPARATOR . "views" . DIRECTORY_SEPARATOR,
+        'DIR_VIEWS' => __DIR__ . DIRECTORY_SEPARATOR . 'views' . DIRECTORY_SEPARATOR,
 
         #BASE URL (usually the domain root)
         'BASE_URL' => ROOT_URL . 'taoBackOffice/',
@@ -62,5 +75,6 @@ return [
     ],
     'containerServiceProviders' => [
         ListServiceProvider::class,
+        ListElementServiceProvider::class,
     ]
 ];

@@ -18,56 +18,58 @@
  * Copyright (c) 2002-2008 (original work) Public Research Centre Henri Tudor & University of Luxembourg (under the project TAO & TAO2);
  *               2008-2010 (update and modification) Deutsche Institut für Internationale Pädagogische Forschung (under the project TAO-TRANSFER);
  *               2009-2012 (update and modification) Public Research Centre Henri Tudor (under the project TAO-SUSTAIN & TAO-DEV);
- *               2013-2021 (update and modification) Open Assessment Technologies SA;
+ *               2013-2022 (update and modification) Open Assessment Technologies SA;
  */
+
+declare(strict_types=1);
 
 namespace oat\taoBackOffice\controller;
 
-use common_exception_BadRequest;
-use oat\taoBackOffice\model\lists\ListCreatedResponse;
-use common_ext_ExtensionException as ExtensionException;
-use core_kernel_classes_Class as RdfClass;
-use core_kernel_classes_Property as RdfProperty;
-use core_kernel_persistence_Exception;
-use oat\generis\model\OntologyAwareTrait;
+use oat\generis\model\data\Ontology;
 use oat\tao\helpers\Template;
 use oat\tao\model\featureFlag\FeatureFlagChecker;
-use oat\tao\model\http\HttpJsonResponseTrait;
-use oat\tao\model\Lists\Business\Domain\CollectionType;
-use oat\tao\model\Lists\Business\Domain\Value;
-use oat\tao\model\Lists\Business\Domain\ValueCollection;
 use oat\tao\model\featureFlag\FeatureFlagCheckerInterface;
+use oat\tao\model\http\HttpJsonResponseTrait;
+use oat\tao\model\Language\Business\Specification\LanguageClassSpecification;
+use oat\tao\model\Language\Service\LanguageListElementSortService;
+use oat\tao\model\Lists\Business\Contract\ListElementSorterInterface;
+use oat\tao\model\Lists\Business\Domain\CollectionType;
+use oat\tao\model\Lists\Business\Domain\ValueCollection;
 use oat\tao\model\Lists\Business\Domain\RemoteSourceContext;
-use oat\tao\model\Lists\Business\Domain\ValueCollectionSearchRequest;
-use oat\tao\model\Lists\Business\Input\ValueCollectionSearchInput;
 use oat\tao\model\Lists\Business\Service\RemoteSource;
 use oat\tao\model\Lists\Business\Service\RemoteSourcedListOntology;
 use oat\tao\model\Lists\Business\Service\ValueCollectionService;
 use oat\tao\model\Lists\DataAccess\Repository\ValueConflictException;
-use oat\tao\model\TaoOntology;
+use oat\tao\model\Specification\ClassSpecificationInterface;
+use oat\taoBackOffice\model\lists\Contract\ListDeleterInterface;
+use oat\taoBackOffice\model\lists\Contract\ListUpdaterInterface;
+use oat\taoBackOffice\model\lists\Exception\ListDeletionException;
+use oat\taoBackOffice\model\lists\Service\ListDeleter;
+use oat\taoBackOffice\model\lists\Service\ListUpdater;
+use oat\taoBackOffice\model\lists\ListCreatedResponse;
 use oat\taoBackOffice\model\lists\ListCreator;
 use oat\taoBackOffice\model\lists\ListService;
-use RuntimeException;
+use oat\taoBackOffice\model\ListElement\Context\ListElementsFinderContext;
+use oat\taoBackOffice\model\ListElement\Contract\ListElementsFinderInterface;
+use oat\taoBackOffice\model\ListElement\Service\ListElementsFinder;
+use BadFunctionCallException;
+use common_Exception;
+use common_exception_BadRequest;
+use common_exception_Error;
+use common_ext_ExtensionException;
+use core_kernel_classes_Class;
+use core_kernel_persistence_Exception;
 use tao_actions_CommonModule;
 use tao_actions_form_RemoteList;
 use tao_helpers_Scriptloader;
 use tao_helpers_Uri;
-use tao_models_classes_LanguageService;
+use OverflowException;
+use RuntimeException;
+use Throwable;
 
-/**
- * This controller provide the actions to manage the lists of data
- *
- * @author CRP Henri Tudor - TAO Team - {@link http://www.tao.lu}
- * @license GPLv2  http://www.opensource.org/licenses/gpl-2.0.php
- * @package taoBackOffice
- *
- */
 class Lists extends tao_actions_CommonModule
 {
-    use OntologyAwareTrait;
     use HttpJsonResponseTrait;
-
-    private const REMOTE_LIST_PREVIEW_LIMIT = 20;
 
     /** @var bool */
     private $isListsDependencyEnabled;
@@ -77,19 +79,16 @@ class Lists extends tao_actions_CommonModule
      * - Returns the page with the lists for GET requests
      * - Creates a new list and returns its name and URI for POST requests
      *
-     * @return void
-     *
-     * @throws common_exception_BadRequest
+     * @throws common_Exception
+     * @throws common_ext_ExtensionException
+     * @throws core_kernel_persistence_Exception
      */
-    public function index()
+    public function index(): void
     {
         if ($this->getPsrRequest()->getMethod() === 'POST') {
-            if (!$this->isXmlHttpRequest()) {
-                throw new common_exception_BadRequest('wrong request mode');
-            }
+            $this->assertIsXmlHttpRequest();
 
             $createdResponse = $this->getListCreator()->createEmptyList();
-
             $this->setSuccessJsonResponse($createdResponse, 201);
 
             return;
@@ -99,20 +98,17 @@ class Lists extends tao_actions_CommonModule
         $this->defaultData();
 
         $this->setData('lists', $this->getListData());
+        $this->setData('maxItems', $this->getListService()->getMaxItems());
         $this->setView('Lists/index.tpl');
     }
 
     /**
-     * @param ValueCollectionService $valueCollectionService
-     * @param RemoteSource           $remoteSource
-     *
-     * @throws ExtensionException
+     * @throws common_Exception
+     * @throws common_ext_ExtensionException
      * @throws core_kernel_persistence_Exception
      */
-    public function remote(
-        ValueCollectionService $valueCollectionService,
-        RemoteSource $remoteSource
-    ) {
+    public function remote(ValueCollectionService $valueCollectionService, RemoteSource $remoteSource): void
+    {
         tao_helpers_Scriptloader::addCssFile(Template::css('lists.css', 'tao'));
 
         $this->defaultData();
@@ -136,26 +132,29 @@ class Lists extends tao_actions_CommonModule
 
                 try {
                     $this->sync($valueCollectionService, $remoteSource, $newList);
+                    $listElements = $this->getListElementsFinder()->find(
+                        $this->createListElementsFinderContext($newList)
+                    );
 
-                    // @FIXME Refactor this part as this is a hotfix
-                    $elements = $this->getListService()->getListElements($newList);
                     $this->setSuccessJsonResponse(
-                        new ListCreatedResponse($newList, iterator_to_array($elements)),
+                        new ListCreatedResponse(
+                            $newList,
+                            $listElements->jsonSerialize(),
+                            $listElements->getTotalCount()
+                        ),
                         201
                     );
 
                     return;
                 } catch (ValueConflictException $exception) {
-                    $this->returnError(
-                        $exception->getMessage() . __(' Probably given list was already imported.')
-                    );
+                    $this->setErrorJsonResponse($exception->getUserMessage());
 
                     return;
                 } catch (RuntimeException $exception) {
                     throw $exception;
                 } finally {
                     if (isset($exception)) {
-                        $this->removeList(tao_helpers_Uri::encode($newList->getUri()));
+                        $this->getListDeleter()->delete($newList);
                     }
                 }
             }
@@ -170,75 +169,46 @@ class Lists extends tao_actions_CommonModule
     }
 
     /**
-     * @param ValueCollectionService $valueCollectionService
-     * @param RemoteSource           $remoteSource
-     *
-     * @throws common_exception_BadRequest
+     * @throws common_Exception
      */
     public function reloadRemoteList(ValueCollectionService $valueCollectionService, RemoteSource $remoteSource): void
     {
-        if (!$this->isXmlHttpRequest()) {
-            throw new common_exception_BadRequest('wrong request mode');
-        }
+        $this->assertIsXmlHttpRequest();
 
         $saved = false;
+        $message = __('Attempt for reloading of remote list was not successful');
 
         $uri = $_POST['uri'] ?? null;
 
-        if (null !== $uri) {
-            $decodedUri = tao_helpers_Uri::decode($uri);
+        if ($uri !== null) {
+            try {
+                $this->sync(
+                    $valueCollectionService,
+                    $remoteSource,
+                    $this->getListService()->getList(tao_helpers_Uri::decode($uri)),
+                    true
+                );
 
-            $this->sync(
-                $valueCollectionService,
-                $remoteSource,
-                $this->getListService()->getList($decodedUri)
-            );
-
-            $saved = true;
+                $saved = true;
+                $message = __('Remote list was successfully reloaded');
+            } catch (Throwable $exception) {
+                if ($exception instanceof ValueConflictException) {
+                    $message = $exception->getUserMessage();
+                }
+            }
         }
 
-        $this->returnJson(['saved' => $saved]);
+        $this->returnJson([
+            'saved' => $saved,
+            'message' => $message,
+        ]);
     }
 
-    private function createList(array $values): RdfClass
-    {
-        $class = $this->getListService()->createList($values[tao_actions_form_RemoteList::FIELD_NAME]);
-
-        $propertyType = new RdfProperty(CollectionType::TYPE_PROPERTY);
-        $propertyRemote = new RdfProperty((string) CollectionType::remote());
-        $class->setPropertyValue($propertyType, $propertyRemote);
-
-        $propertySource = new RdfProperty(RemoteSourcedListOntology::PROPERTY_SOURCE_URI);
-        $class->setPropertyValue($propertySource, $values[tao_actions_form_RemoteList::FIELD_SOURCE_URL]);
-
-        $propertySource = new RdfProperty(RemoteSourcedListOntology::PROPERTY_ITEM_LABEL_PATH);
-        $class->setPropertyValue($propertySource, $values[tao_actions_form_RemoteList::FIELD_ITEM_LABEL_PATH]);
-
-        $propertySource = new RdfProperty(RemoteSourcedListOntology::PROPERTY_ITEM_URI_PATH);
-        $class->setPropertyValue($propertySource, $values[tao_actions_form_RemoteList::FIELD_ITEM_URI_PATH]);
-
-        if ($this->isListsDependencyEnabled()) {
-            $propertySource = new RdfProperty(RemoteSourcedListOntology::PROPERTY_DEPENDENCY_ITEM_URI_PATH);
-            $class->setPropertyValue(
-                $propertySource,
-                $values[tao_actions_form_RemoteList::FIELD_DEPENDENCY_ITEM_URI_PATH]
-            );
-        }
-
-        return $class;
-    }
-
-    /**
-     * @param ValueCollectionService $valueCollectionService
-     * @param RemoteSource           $remoteSource
-     * @param RdfClass               $collectionClass
-     *
-     * @throws core_kernel_persistence_Exception
-     */
-    public function sync(
+    private function sync(
         ValueCollectionService $valueCollectionService,
         RemoteSource $remoteSource,
-        RdfClass $collectionClass
+        core_kernel_classes_Class $collectionClass,
+        bool $isReloading = false
     ): void {
         $context = $this->createRemoteSourceContext($collectionClass);
         $collection = new ValueCollection(
@@ -249,324 +219,301 @@ class Lists extends tao_actions_CommonModule
         $result = $valueCollectionService->persist($collection);
 
         if (!$result) {
-            throw new RuntimeException('Sync was not successful');
+            throw new RuntimeException(
+                sprintf(
+                    'Attempt for %s of remote list was not successful',
+                    $isReloading ? 'reloading' : 'loading'
+                )
+            );
         }
     }
 
     /**
-     * Returns all lists with all values for all lists
+     * @throws common_Exception
+     * @throws common_exception_Error
+     */
+    public function getListsData(): void
+    {
+        $this->assertIsXmlHttpRequest();
+
+        $data = [];
+
+        foreach ($this->getListService()->getLists() as $listClass) {
+            $data[] = $this->getListService()->toTree($listClass);
+        }
+
+        $this->returnJson(
+            [
+                'data' => __('Lists'),
+                'attributes' => ['class' => 'node-root'],
+                'children' => $data,
+                'state' => 'open',
+            ]
+        );
+    }
+
+    /**
+     * @throws common_Exception
+     */
+    public function getListElements(): void
+    {
+        $this->assertIsXmlHttpRequest();
+
+        $data = [
+            'elements' => [],
+            'totalCount' => 0,
+        ];
+
+        if ($this->hasGetParameter('listUri')) {
+            $listUri = tao_helpers_Uri::decode($this->getGetParameter('listUri'));
+            $list = $this->getListService()->getList($listUri);
+
+            if ($list !== null) {
+                $listElements = $this->getListElementsFinder()->find(
+                    $this->createListElementsFinderContext($list)
+                );
+
+                $data['elements'] = $this->getSortedElementsDependingOnListClass($list, $listElements);
+                $data['totalCount'] = $listElements->getTotalCount();
+            }
+        }
+
+        $this->setSuccessJsonResponse($data);
+    }
+
+    /**
+     * @throws common_exception_BadRequest
      *
-     * @param bool $showRemoteLists
-     *
-     * @return array
+     * @todo Use $this->setSuccessJsonResponse() & setErrorJsonResponse()
+     *       instead of returnJson(). For that, frontend should access
+     *       'success' attribute from the response instead of 'saved'
+     */
+    public function saveLists(ValueCollectionService $valueCollectionService): void
+    {
+        $this->assertIsXmlHttpRequest();
+
+        $valueCollectionService->setMaxItems(
+            $this->getListService()->getMaxItems()
+        );
+
+        try {
+            $this->getListUpdater()->updateByRequest($this->getPsrRequest());
+
+            $this->returnJson(
+                [
+                    'saved' => true
+                ]
+            );
+        } catch (BadFunctionCallException | RuntimeException $exception) {
+            $this->returnJson(
+                [
+                    'saved' => false,
+                    'errors' => [
+                        __($exception->getMessage()),
+                    ],
+                ]
+            );
+        } catch (OverflowException $exception) {
+            $this->returnJson(
+                [
+                    'saved' => false,
+                    'errors' => [
+                        __('The list exceeds the allowed number of items'),
+                    ],
+                ]
+            );
+        } catch (ValueConflictException $exception) {
+            $this->returnJson(
+                [
+                    'saved' => false,
+                    'errors' => [
+                        __('The list should contain unique URIs'),
+                    ],
+                ]
+            );
+        }
+    }
+
+    /**
+     * @throws common_Exception
+     * @throws core_kernel_persistence_Exception
+     */
+    public function create(): void
+    {
+        $this->assertIsXmlHttpRequest();
+
+        $response = [];
+
+        if ($this->hasRequestParameter('classUri')) {
+            $listService = $this->getListService();
+            $type = $this->getRequestParameter('type');
+
+            if ($type === 'class' && $this->getRequestParameter('classUri') === 'root') {
+                $createdResource = $listService->createList();
+            } elseif ($type === 'instance') {
+                $classUri = tao_helpers_Uri::decode($this->getRequestParameter('classUri'));
+                $listClass = $listService->getList($classUri);
+
+                if ($listClass !== null) {
+                    $listService->createListElement($listClass);
+                    $createdResource = iterator_to_array($listService->getListElements($listClass))[0] ?? null;
+                }
+            }
+
+            if (isset($createdResource)) {
+                $response['label'] = $createdResource->getLabel();
+                $response['uri'] = tao_helpers_Uri::encode($createdResource->getUri());
+            }
+        }
+
+        $this->returnJson($response);
+    }
+
+    /**
+     * @throws common_exception_BadRequest
+     */
+    public function rename(): void
+    {
+        $this->assertIsXmlHttpRequest();
+
+        $data = ['renamed' => false];
+
+        if ($this->hasRequestParameter('uri') && $this->hasRequestParameter('newName')) {
+            $listService = $this->getListService();
+            $newName = $this->getRequestParameter('newName');
+
+            if ($this->hasRequestParameter('classUri')) {
+                $classUri = tao_helpers_Uri::decode($this->getRequestParameter('classUri'));
+                $listClass = $listService->getList($classUri);
+                $resourceToRename = $listService->getListElement(
+                    $listClass,
+                    tao_helpers_Uri::decode($this->getRequestParameter('uri'))
+                );
+            } else {
+                $classUri = tao_helpers_Uri::decode($this->getRequestParameter('uri'));
+                $resourceToRename = $listService->getList($classUri);
+            }
+
+            if ($resourceToRename !== null) {
+                $resourceToRename->setLabel($newName);
+                $data['renamed'] = true;
+            }
+        }
+
+        $this->returnJson($data);
+    }
+
+    /**
+     * @throws common_exception_BadRequest
+     */
+    public function removeList(string $uri = null): void
+    {
+        $this->assertIsXmlHttpRequest();
+
+        $deleted = false;
+
+        if ($uri !== null) {
+            try {
+                $list = $this->getListService()->getList(tao_helpers_Uri::decode($uri));
+                $this->getListDeleter()->delete($list);
+
+                $deleted = true;
+            } catch (ListDeletionException $exception) {
+                $deleted = false;
+            }
+        }
+
+        $this->returnJson(['deleted' => $deleted]);
+    }
+
+    /**
+     * @throws common_exception_BadRequest
+     */
+    public function removeListElement(): void
+    {
+        $this->assertIsXmlHttpRequest();
+
+        $deleted = false;
+
+        if ($this->hasRequestParameter('uri')) {
+            $deleted = $this->getListService()->removeListElement(
+                $this->getOntology()->getResource(
+                    tao_helpers_Uri::decode($this->getRequestParameter('uri'))
+                )
+            );
+        }
+
+        $this->returnJson(['deleted' => $deleted]);
+    }
+
+    private function createList(array $values): core_kernel_classes_Class
+    {
+        $class = $this->getListService()->createList($values[tao_actions_form_RemoteList::FIELD_NAME]);
+
+        $propertyType = $class->getProperty(CollectionType::TYPE_PROPERTY);
+        $propertyRemote = $class->getProperty((string) CollectionType::remote());
+        $class->setPropertyValue($propertyType, $propertyRemote);
+
+        $propertySource = $class->getProperty(RemoteSourcedListOntology::PROPERTY_SOURCE_URI);
+        $class->setPropertyValue($propertySource, $values[tao_actions_form_RemoteList::FIELD_SOURCE_URL]);
+
+        $propertySource = $class->getProperty(RemoteSourcedListOntology::PROPERTY_ITEM_LABEL_PATH);
+        $class->setPropertyValue($propertySource, $values[tao_actions_form_RemoteList::FIELD_ITEM_LABEL_PATH]);
+
+        $propertySource = $class->getProperty(RemoteSourcedListOntology::PROPERTY_ITEM_URI_PATH);
+        $class->setPropertyValue($propertySource, $values[tao_actions_form_RemoteList::FIELD_ITEM_URI_PATH]);
+
+        if ($this->isListsDependencyEnabled()) {
+            $propertySource = $class->getProperty(RemoteSourcedListOntology::PROPERTY_DEPENDENCY_ITEM_URI_PATH);
+            $class->setPropertyValue(
+                $propertySource,
+                $values[tao_actions_form_RemoteList::FIELD_DEPENDENCY_ITEM_URI_PATH]
+            );
+        }
+
+        return $class;
+    }
+
+    /**
      * @throws core_kernel_persistence_Exception
      */
     private function getListData(bool $showRemoteLists = false): array
     {
         $listService = $this->getListService();
+        $listElementsFinder = $this->getListElementsFinder();
         $lists = [];
+
         foreach ($listService->getLists() as $listClass) {
             if ($listService->isRemote($listClass) !== $showRemoteLists) {
                 continue;
             }
 
-            $elements = [];
-            foreach (
-                $listService->getListElements(
-                    $listClass,
-                    true,
-                    $showRemoteLists ? self::REMOTE_LIST_PREVIEW_LIMIT : 0
-                ) as $index => $listElement
-            ) {
-                $elements[$index] = [
-                    'uri'       => tao_helpers_Uri::encode($listElement->getUri()),
-                    'label'     => $listElement->getLabel()
-                ];
-                ksort($elements);
-            }
-
-            if ($showRemoteLists && count($elements) === self::REMOTE_LIST_PREVIEW_LIMIT) {
-                $elements[] = [
-                    'uri' => '',
-                    'label' => '...',
-                ];
-            }
+            $listElements = $listElementsFinder->find($this->createListElementsFinderContext($listClass));
 
             $lists[] = [
-                'uri'       => tao_helpers_Uri::encode($listClass->getUri()),
-                'label'     => $listClass->getLabel(),
-                // The Language list should not be editable.
-                // @todo Make two different kind of lists: system list that are not editable and usual list.
-                'editable'  => $listClass->isSubClassOf($this->getClass(TaoOntology::CLASS_URI_LIST)) && $listClass->getUri() !== tao_models_classes_LanguageService::CLASS_URI_LANGUAGES,
-                'elements'  => $elements
+                'uri' => tao_helpers_Uri::encode($listClass->getUri()),
+                'label' => $listClass->getLabel(),
+                'editable' => $listService->isEditable($listClass),
+                'elements' => $this->getSortedElementsDependingOnListClass($listClass, $listElements),
+                'totalCount' => $listElements->getTotalCount(),
             ];
         }
+
         return $lists;
     }
 
-    /**
-     * get the JSON data to populate the tree widget
-     *
-     * @throws \common_exception_Error
-     * @throws common_exception_BadRequest
-     */
-    public function getListsData()
-    {
-        if (!$this->isXmlHttpRequest()) {
-            throw new common_exception_BadRequest('wrong request mode');
+    private function getSortedElementsDependingOnListClass(
+        core_kernel_classes_Class $listClass,
+        ValueCollection $listElements
+    ): array {
+        if ($this->getLanguageClassSpecification()->isSatisfiedBy($listClass)) {
+            return $this->getLanguageListElementSortService()->getSortedListCollectionValues($listElements);
         }
-        $data = [];
-        foreach ($this->getListService()->getLists() as $listClass) {
-            $data[] = $this->getListService()->toTree($listClass);
-        }
-        $this->returnJson([
-            'data'      => __('Lists'),
-            'attributes' => ['class' => 'node-root'],
-            'children'  => $data,
-            'state'     => 'open'
-        ]);
+
+        return $listElements->jsonSerialize();
     }
 
-    /**
-     * get the elements in JSON of the list in parameter
-     * @throws common_exception_BadRequest
-     * @return void
-     */
-    public function getListElements()
-    {
-        if (!$this->isXmlHttpRequest()) {
-            throw new common_exception_BadRequest('wrong request mode');
-        }
-        $data = [];
-        if ($this->hasRequestParameter('listUri')) {
-            $list = $this->getListService()->getList(tao_helpers_Uri::decode($this->getRequestParameter('listUri')));
-            if (!is_null($list)) {
-                $isRemote = $this->getListService()->isRemote($list);
-
-                $limit    = $isRemote
-                    ? self::REMOTE_LIST_PREVIEW_LIMIT
-                    : 0;
-
-                foreach ($this->getListService()->getListELements($list, true, $limit) as $listElement) {
-                    $data[tao_helpers_Uri::encode($listElement->getUri())] = $listElement->getLabel();
-                }
-
-                if ($isRemote && count($data) === self::REMOTE_LIST_PREVIEW_LIMIT) {
-                    $data[''] = '...';
-                }
-            }
-        }
-        $this->returnJson($data);
-    }
-
-
-    /**
-     * Save a list and it's elements
-     *
-     * @param ValueCollectionService $valueCollectionService
-     *
-     * @return void
-     *
-     * @throws common_exception_BadRequest
-     */
-    public function saveLists(ValueCollectionService $valueCollectionService): void
-    {
-        if (!$this->isXmlHttpRequest()) {
-            throw new common_exception_BadRequest('wrong request mode');
-        }
-
-        if (!$this->hasRequestParameter('uri')) {
-            $this->returnJson(['saved' => false]);
-
-            return;
-        }
-
-        $listClass = $this->getListService()->getList(tao_helpers_Uri::decode($this->getRequestParameter('uri')));
-        if (null === $listClass) {
-            $this->returnJson(['saved' => false]);
-
-            return;
-        }
-
-        // use $_POST instead of getRequestParameters to prevent html encoding
-        $payload = $_POST;
-
-        unset($payload['uri']);
-
-        if (isset($payload['label'])) {
-            $listClass->setLabel($payload['label']);
-            unset($payload['label']);
-        }
-
-        $elements = $valueCollectionService->findAll(
-            new ValueCollectionSearchInput(
-                (new ValueCollectionSearchRequest())
-                    ->setValueCollectionUri($listClass->getUri())
-            )
-        );
-
-        foreach ($payload as $key => $value) {
-            if (preg_match('/^list-element_/', $key)) {
-                $encodedUri = preg_replace('/^list-element_[0-9]+_/', '', $key);
-                $uri        = tao_helpers_Uri::decode($encodedUri);
-
-                $newUriValue = trim($payload["uri_$key"] ?? '');
-
-                $element = $elements->extractValueByUri($uri);
-
-                if (null === $element) {
-                    $elements->addValue(new Value(null, $newUriValue, $value));
-                } else {
-                    $element->setLabel($value);
-
-                    if ($newUriValue) {
-                        $element->setUri($newUriValue);
-                    }
-                }
-
-            }
-        }
-
-        try {
-            $this->returnJson(['saved' => $valueCollectionService->persist($elements)]);
-        } catch (ValueConflictException $exception) {
-            $this->returnJson(['saved' => false, 'errors' => [__('The list should contain unique URIs')]]);
-        }
-    }
-
-    /**
-     * Create a list or a list element
-     * @throws common_exception_BadRequest
-     * @return void
-     */
-    public function create()
-    {
-        if (!$this->isXmlHttpRequest()) {
-            throw new common_exception_BadRequest('wrong request mode');
-        }
-
-        $response = [];
-        if ($this->getRequestParameter('classUri')) {
-            if ($this->getRequestParameter('type') === 'class' && $this->getRequestParameter('classUri') ==='root') {
-                $listClass = $this->getListService()->createList();
-                if (!is_null($listClass)) {
-                    $response['label']  = $listClass->getLabel();
-                    $response['uri']    = tao_helpers_Uri::encode($listClass->getUri());
-                }
-            }
-
-            if ($this->getRequestParameter('type') === 'instance') {
-                $listClass = $this->getListService()->getList(tao_helpers_Uri::decode($this->getRequestParameter('classUri')));
-                if (!is_null($listClass)) {
-                    $listElt = $this->getListService()->createListElement($listClass);
-                    if (!is_null($listElt)) {
-                        $response['label']  = $listElt->getLabel();
-                        $response['uri']    = tao_helpers_Uri::encode($listElt->getUri());
-                    }
-                }
-            }
-        }
-        $this->returnJson($response);
-    }
-
-    /**
-     * Rename a list node: change the label of a resource
-     * Render the json response with the renamed status
-     * @throws common_exception_BadRequest
-     * @return void
-     */
-    public function rename()
-    {
-        if (!$this->isXmlHttpRequest()) {
-            throw new common_exception_BadRequest('wrong request mode');
-        }
-
-        $data = ['renamed' => false];
-
-        if ($this->hasRequestParameter('uri') && $this->hasRequestParameter('newName')) {
-            if ($this->hasRequestParameter('classUri')) {
-                $listClass = $this->getListService()->getList(tao_helpers_Uri::decode($this->getRequestParameter('classUri')));
-                $listElt = $this->getListService()->getListElement($listClass, tao_helpers_Uri::decode($this->getRequestParameter('uri')));
-                if (!is_null($listElt)) {
-                    $listElt->setLabel($this->getRequestParameter('newName'));
-                    if ($listElt->getLabel() == $this->getRequestParameter('newName')) {
-                        $data['renamed'] = true;
-                    }
-                }
-            } else {
-                $listClass = $this->getListService()->getList(tao_helpers_Uri::decode($this->getRequestParameter('uri')));
-                if (!is_null($listClass)) {
-                    $listClass->setLabel($this->getRequestParameter('newName'));
-                    if ($listClass->getLabel() == $this->getRequestParameter('newName')) {
-                        $data['renamed'] = true;
-                    }
-                }
-            }
-        }
-        $this->returnJson($data);
-    }
-
-    /**
-     * Remove the list in parameter
-     *
-     * @param string|null $uri
-     *
-     * @return void
-     * @throws common_exception_BadRequest
-     */
-    public function removeList(?string $uri = null): void
-    {
-        if (!$this->isXmlHttpRequest()) {
-            throw new common_exception_BadRequest('wrong request mode');
-        }
-
-        $deleted = false;
-
-        if (null !== $uri) {
-            $decodedUri = tao_helpers_Uri::decode($uri);
-
-            $deleted = $this->getListService()->removeList(
-                $this->getListService()->getList($decodedUri)
-            );
-        }
-
-        $this->returnJson(['deleted' => $deleted]);
-    }
-
-    /**
-     * Remove the list element in parameter
-     * @throws common_exception_BadRequest
-     * @return void
-     */
-    public function removeListElement()
-    {
-        if (!$this->isXmlHttpRequest()) {
-            throw new common_exception_BadRequest('wrong request mode');
-        }
-        $deleted = false;
-
-        if ($this->hasRequestParameter('uri')) {
-            $deleted = $this->getListService()->removeListElement(
-                $this->getResource(tao_helpers_Uri::decode($this->getRequestParameter('uri')))
-            );
-        }
-        $this->returnJson(['deleted' => $deleted]);
-    }
-
-    /**
-     * @return ListService
-     */
-    protected function getListService()
-    {
-        return $this->getPsrContainer()->get(ListService::class);
-    }
-
-    private function getListCreator(): ListCreator
-    {
-        return $this->getPsrContainer()->get(ListCreator::class);
-    }
-
-    private function createRemoteSourceContext(RdfClass $collectionClass): RemoteSourceContext
+    private function createRemoteSourceContext(core_kernel_classes_Class $collectionClass): RemoteSourceContext
     {
         $sourceUrl = (string) $collectionClass->getOnePropertyValue(
             $collectionClass->getProperty(RemoteSourcedListOntology::PROPERTY_SOURCE_URI)
@@ -595,6 +542,28 @@ class Lists extends tao_actions_CommonModule
         return new RemoteSourceContext($parameters);
     }
 
+    private function createListElementsFinderContext(core_kernel_classes_Class $listClass): ListElementsFinderContext
+    {
+        $parameters = [
+            ListElementsFinderContext::PARAMETER_LIST_CLASS => $listClass,
+        ];
+
+        if ($this->hasGetParameter('offset')) {
+            $parameters[ListElementsFinderContext::PARAMETER_OFFSET] = (int) $this->getGetParameter('offset');
+        }
+
+        if ($this->hasGetParameter('limit')) {
+            $parameters[ListElementsFinderContext::PARAMETER_LIMIT] = (int) $this->getGetParameter('limit');
+        }
+
+        // Todo to be able to sort limited selection we need to sort by RDBS now disabling limit for Language list
+        if ($this->getLanguageClassSpecification()->isSatisfiedBy($listClass)) {
+            $parameters[ListElementsFinderContext::PARAMETER_LIMIT] = 0;
+        }
+
+        return new ListElementsFinderContext($parameters);
+    }
+
     private function isListsDependencyEnabled(): bool
     {
         if (!isset($this->isListsDependencyEnabled)) {
@@ -606,8 +575,55 @@ class Lists extends tao_actions_CommonModule
         return $this->isListsDependencyEnabled;
     }
 
+    private function assertIsXmlHttpRequest(): void
+    {
+        if (!$this->isXmlHttpRequest()) {
+            throw new common_exception_BadRequest('wrong request mode');
+        }
+    }
+
     private function getFeatureFlagChecker(): FeatureFlagCheckerInterface
     {
-        return $this->getServiceLocator()->get(FeatureFlagChecker::class);
+        return $this->getPsrContainer()->get(FeatureFlagChecker::class);
+    }
+
+    private function getListService(): ListService
+    {
+        return $this->getPsrContainer()->get(ListService::class);
+    }
+
+    private function getListCreator(): ListCreator
+    {
+        return $this->getPsrContainer()->get(ListCreator::class);
+    }
+
+    private function getListElementsFinder(): ListElementsFinderInterface
+    {
+        return $this->getPsrContainer()->get(ListElementsFinder::class);
+    }
+
+    private function getListUpdater(): ListUpdaterInterface
+    {
+        return $this->getPsrContainer()->get(ListUpdater::class);
+    }
+
+    private function getListDeleter(): ListDeleterInterface
+    {
+        return $this->getPsrContainer()->get(ListDeleter::class);
+    }
+
+    private function getLanguageClassSpecification(): ClassSpecificationInterface
+    {
+        return $this->getPsrContainer()->get(LanguageClassSpecification::class);
+    }
+
+    private function getLanguageListElementSortService(): ListElementSorterInterface
+    {
+        return $this->getPsrContainer()->get(LanguageListElementSortService::class);
+    }
+
+    private function getOntology(): Ontology
+    {
+        return $this->getPsrContainer()->get(Ontology::SERVICE_ID);
     }
 }

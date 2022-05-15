@@ -24,8 +24,10 @@ define([
     'ui/dialog/confirm',
     'layout/section',
     'core/request',
-    'css!taoBackOfficeCss/list',
-], function ($, __, Uri, urlUtil, feedback, dialogConfirm, section, request) {
+    'tpl!taoBackOffice/tpl/tooltip',
+    'ui/tooltip',
+    'css!taoBackOfficeCss/list'
+], function ($, __, Uri, urlUtil, feedback, dialogConfirm, section, request, tooltipTpl, tooltip) {
     'use strict';
 
     function findListContainer(uri) {
@@ -40,6 +42,7 @@ define([
         const $checkbox = $('<input>')
             .attr('type', 'checkbox')
             .attr('id', id)
+            .attr('data-testid', 'editUriCheckbox')
             .change(handleEditCheckboxStateChange);
 
         const $label = $('<label>')
@@ -52,12 +55,12 @@ define([
             .append($checkbox, $label);
     }
 
-    function addSquareBtn(title, icon, $listToolBar, position='rgt') {
+    function createButton(title, icon, position='rgt') {
         const $btn = $('<button>', {
             'class': `btn-info small ${position} icon-${icon}`,
+            'data-testid': (`${icon}ElementButton`),
             title: __(title) }
         );
-        $listToolBar.append($btn);
 
         return $btn;
     }
@@ -71,16 +74,17 @@ define([
     }
 
     function createListElement(name, value = '') {
+        const uri = Uri.decode(clearUri(name));
         return $(`<div class='list-element'>
             <div class='list-element'>
                 <div class='list-element__input-container'>
-                    <input type='text' name='${name}' value='${value}' />
+                    <input type='text' name='${name}' value='${value}' data-testid='elementNameInput' data-former-value='${value}'/>
                     <div class='list-element__input-container__uri'>
                         <label for='uri_${name}' class='title'>URI</label>
-                        <input id='uri_${name}' type='text' name='uri_${name}' value='${Uri.decode(clearUri(name))}'>
+                        <input id='uri_${name}' type='text' name='uri_${name}' value='${uri}' data-former-value='${uri}' data-testid='elementUriInput'>
                     </div>
                 </div>
-                <span class='icon-checkbox-crossed list-element-delete-btn'>
+                <span class='icon-checkbox-crossed list-element-delete-btn' data-testid='deleteElementButton'>
             </div>
         </div>`);
     }
@@ -89,113 +93,202 @@ define([
         findListContainer($(this).attr('id')).toggleClass('with-uri');
     }
 
+    function showElementsEditControls($listContainer) {
+        $listContainer.find('span.list-element')
+            .replaceWith(function () {
+                return transformListElement($(this));
+            });
+    }
+
     function handleEditList (targetUri) {
-        const saveUrl = urlUtil.route('saveLists', 'Lists', 'taoBackOffice');
-        const delEltUrl = urlUtil.route('removeListElement', 'Lists', 'taoBackOffice');
         const uri = getUriValue(targetUri);
         const $listContainer = findListContainer(uri);
-        let $listForm       = $listContainer.find('form');
-        const $listTitleBar = $listContainer.find('.container-title h6');
-        const $listToolBar  = $listContainer.find('.data-container-footer').empty();
-        let $listSaveBtn;
-        let $listNewBtn;
+        const list = $listContainer.find('ol');
+        const offset = list.children('[id^=list-element]').length;
+        const batchSize = 100;
+        let totalItems = 0;
+        let maxItems = 1000;
 
-        if (!$listForm.length) {
-            let nextElementId;
-
-            $listForm = $('<form>');
-            $listContainer.wrapInner($listForm);
-            $listContainer.find('form').append(`<input type='hidden' name='uri' value='${uri}' />`);
-
-            const $labelEdit = $(`<input type='text' name='label' value=''/>`).val($listTitleBar.text());
-            $listTitleBar.closest('.container-title').html($labelEdit);
-            $labelEdit.focus();
-
-            nextElementId = $listContainer.find('.list-element')
-                .replaceWith(function () {
-                    return transformListElement($(this));
-                })
-                .length;
-
-            $listSaveBtn = addSquareBtn(__('Save list'), 'save', $listToolBar);
-            $listSaveBtn.on('click', function () {
-                $.postJson(
-                    saveUrl,
-                    $(this).closest('form').serializeArray(),
-                    response => {
-                        if (response.saved) {
-                            feedback().success(__('List saved'));
-                            section.get('taoBo_list').loadContentBlock(urlUtil.route('index', 'Lists', 'taoBackOffice'));
-                        } else {
-                            const errors = (response.errors || []).length
-                                ? `<ul><li>${response.errors.join('</li><li>')}</li></ul>`
-                                : '';
-
-                            feedback().error(
-                                `${__('List not saved')}${errors}`,
-                                {encodeHtml: false}
-                            );
-                        }
-                    }
-                );
-                return false;
-            });
-
-            $listNewBtn = addSquareBtn('New element', 'add', $listToolBar);
-            $listNewBtn.click(function () {
-                const $list = $(this).closest('form').find('ol');
-
-                $list.append($('<li>').append(createNewListElement(nextElementId++)))
-                    .closest('.container-content').scrollTop($list.height());
-
-                return false;
-            });
-
-            $listToolBar.append(createEditUriCheckbox(uri));
-
-            $listToolBar.append();
+        if($('#data-max-items').length !== 0) {
+            maxItems = parseInt($('#data-max-items').val(), 10);
         }
 
-        $listContainer.on('click', '.list-element-delete-btn', function () {
-            const $element = $(this).closest('li');
-            const $input   = $element.find('input:text');
-            const eltUri   = clearUri($input.attr('name'));
+        function isLimitReached() {
+            return totalItems >= maxItems;
+        }
 
-            const deleteLocalElement = () => {
-                $element.remove();
-                feedback().success(__('Element deleted'));
-            };
+        loadListElements(uri, offset, batchSize).then(newListData => {
+            extendListWithNewElements(newListData, $listContainer);
 
-            const deleteServerAndLocalElement = () => {
-                $.postJson(
-                    delEltUrl,
-                    { uri : eltUri },
-                    response => {
-                        if (response.deleted) {
-                            deleteLocalElement();
-                        } else {
-                            feedback().error(__('Element not deleted'));
-                        }
-                    }
-                );
-            };
+            const saveUrl = urlUtil.route('saveLists', 'Lists', 'taoBackOffice');
+            const delEltUrl = urlUtil.route('removeListElement', 'Lists', 'taoBackOffice');
+            let $listForm = $listContainer.find('form');
+            const $listTitleBar = $listContainer.find('.container-title h6');
+            const $listToolBar = $listContainer.find('.data-container-footer').empty();
+            const $tooltip = $(tooltipTpl({
+                message : __('Maximum allowed number of elements is reached, you cannot add more elements. Please contact your administrator.')
+            }));
+            let $listSaveBtn;
+            let $listNewBtn;
 
-            const deleteElement = () => {
-                if (eltUri) {
-                    deleteServerAndLocalElement();
-                } else {
-                    deleteLocalElement();
-                }
-            };
+            totalItems = newListData.totalCount;
 
-            if ($input.val() === '') {
-                deleteElement();
-            } else {
-                dialogConfirm(
-                    __('Please confirm you want to delete this list element.'),
-                    deleteElement
-                );
+            function toggleAddButton(isDisabled) {
+                $listNewBtn.attr('disabled', isDisabled);
+                $tooltip.toggleClass('tooltip-hidden', !isDisabled);
             }
+
+            function hasChangedListItemValue(form, item) {
+                const formerValue = $('[name="' + item.name + '"]', form).data('formerValue');
+                const formerURI = $('[name="uri_' + item.name + '"]', form).data('formerValue');
+                const newURI = $('[name="uri_' + item.name + '"]', form).val();
+
+                if (formerURI.trim() == '') {
+                    return true; // New item
+                }
+
+                return ((formerValue != item.value) || (formerURI != newURI));
+            }
+
+            function hasChangedListItemURI(form, item) {
+                const cleanName = item.name.substring(4);
+                const formerURI = $('[name="' + item.name + '"]', form).data('formerValue');
+                const formerValue = $('[name="' + cleanName + '"]', form).data('formerValue');
+                const newValue = $('[name="' + cleanName + '"]', form).val();
+
+                if (formerURI.trim() == '') {
+                    return true; // New item
+                }
+
+                return ((formerValue != newValue) || (formerURI != item.value));
+            }
+
+            /**
+             * We should keep all data for elements whose value *or* URI has changed
+             * (that is, we send both in case either the URI or the value has changed).
+             * Therefore, this function checks also, for each input, if the associated
+             * URI (for values) or value (for URIs) has also changed to do the filtering.
+             */
+            function listItemHasChanged(form, item) {
+                if (!item.hasOwnProperty('name') || !item.hasOwnProperty('value')) {
+                    return true;
+                }
+
+                if (item.name.startsWith('list-element_')) {
+                    return hasChangedListItemValue(form, item);
+                } else if (item.name.startsWith('uri_list-element_')) {
+                    return hasChangedListItemURI(form, item);
+                }
+
+                // Always send the name and URI for the list itself (only
+                // list element inputs may be filtered out)
+                return true;
+            }
+
+            if (!$listForm.length) {
+                let nextElementId = totalItems;
+
+                $listForm = $('<form>');
+                $listContainer.wrapInner($listForm);
+                $listContainer.find('form').append(`<input type='hidden' name='uri' value='${uri}' />`);
+
+                const $labelEdit = $(`<input type='text' name='label' value='' data-testid='listNameInput' />`).val($listTitleBar.text());
+                const $listNewContainer = $('<div></div>', {'class': 'add-button-container'});
+
+                $listTitleBar.closest('.container-title').html($labelEdit);
+                $labelEdit.focus();
+
+                showElementsEditControls($listContainer);
+
+                $listSaveBtn = createButton(__('Save list'), 'save');
+                $listSaveBtn.on('click', function () {
+                    const form = $(this).closest('form');
+
+                    $.postJson(
+                        saveUrl,
+                        form.serializeArray().filter((item) => listItemHasChanged(form, item)),
+                        response => {
+                            if (response.saved) {
+                                feedback().success(__('List saved'));
+                                section.get('taoBo_list').loadContentBlock(urlUtil.route('index', 'Lists', 'taoBackOffice'));
+                            } else {
+                                const errors = (response.errors || []).length
+                                    ? `<ul><li>${response.errors.join('</li><li>')}</li></ul>`
+                                    : '';
+
+                                feedback().error(
+                                    `${__('List not saved')}${errors}`,
+                                    {encodeHtml: false}
+                                );
+                            }
+                        }
+                    );
+                    return false;
+                });
+
+                $listNewBtn = createButton('New element', 'add');
+                $listNewBtn.click(function () {
+                    const $list = $(this).closest('form').find('ol');
+
+                    totalItems = totalItems + 1;
+                    toggleAddButton(isLimitReached());
+
+                    $list.append($('<li>').append(createNewListElement(nextElementId++)))
+                         .closest('.container-content').scrollTop($list.height());
+
+                    return false;
+                });
+
+                $listNewContainer.append($listNewBtn, $tooltip);
+                $listToolBar.append($listSaveBtn, $listNewContainer, createEditUriCheckbox(uri));
+
+                tooltip.lookup($listNewContainer);
+                toggleAddButton(isLimitReached());
+            }
+
+            $listContainer.on('click', '.list-element-delete-btn', function () {
+                const $element = $(this).closest('li');
+                const $input   = $element.find('input:text');
+                const eltUri   = clearUri($input.attr('name'));
+
+                const deleteLocalElement = () => {
+                    $element.remove();
+                    totalItems = totalItems - 1;
+                    toggleAddButton(isLimitReached());
+                    feedback().success(__('Element deleted'));
+                };
+
+                const deleteServerAndLocalElement = () => {
+                    $.postJson(
+                        delEltUrl,
+                        { uri : eltUri },
+                        response => {
+                            if (response.deleted) {
+                                deleteLocalElement();
+                            } else {
+                                feedback().error(__('Element not deleted'));
+                            }
+                        }
+                    );
+                };
+
+                const deleteElement = () => {
+                    if (eltUri) {
+                        deleteServerAndLocalElement();
+                    } else {
+                        deleteLocalElement();
+                    }
+                };
+
+                if ($input.val() === '') {
+                    deleteElement();
+                } else {
+                    dialogConfirm(
+                        __('Please confirm you want to delete this list element.'),
+                        deleteElement
+                    );
+                }
+            });
         });
     }
 
@@ -213,6 +306,8 @@ define([
         }).then(response => {
             response.data.uri = Uri.encode(response.data.uri);
             addNewList(response.data, isRemoteListCreation);
+        }).catch(function(err) {
+            feedback().error(err.response.message || err);
         });
     }
 
@@ -265,7 +360,7 @@ define([
                     feedback().success(__('List reloaded'));
                     section.get('taoBo_remotelist').loadContentBlock(urlUtil.route('remote', 'Lists', 'taoBackOffice'));
                 } else {
-                    feedback().error(__('List failed to be reloaded'));
+                    feedback().error(response.message || __('List failed to be reloaded'));
                 }
             }
         );
@@ -284,7 +379,7 @@ define([
                     <h6>${newList.label}</h6>
                 </header>
                 <div class="container-content" id="list-elements_${newList.uri}">
-                    ${renderListElements(newList.elements)}
+                    ${renderListElements(newList, isRemoteList)}
                 </div>
                 <footer class="data-container-footer action-bar">
                     <button
@@ -304,14 +399,24 @@ define([
         );
     }
 
-    function renderListElements(elements) {
-        const list = elements.map((element, index) => {
-            return `<li id="list-element_${index}">
-                <span class="list-element" id="list-element_0_${Uri.encode(element.uri)}">${element.label}</span>
-            </li>`;
+    function renderListElements(newList, isRemoteList) {
+        let list = newList.elements.map((element, index) => {
+            return renderListElement(index, element.uri, element.label);
         });
 
-        return `<ol>${list.join('')}</ol>`;
+        if (isRemoteList && newList.totalCount > newList.elements.length) {
+            const newElementIndex = newList.elements.length + 1;
+
+            list.push(renderListElement(newElementIndex, '', '...'));
+        }
+
+        return `<ol data-testid="elements">${list.join('')}</ol>`;
+    }
+
+    function renderListElement(index, uri, label) {
+        return `<li id="list-element_${index}">
+            <span class="list-element" id="list-element_${index}_${Uri.encode(uri)}">${label}</span>
+        </li>`;
     }
 
     function getUriValue(targetUri) {
@@ -319,6 +424,73 @@ define([
             return targetUri;
         } else if (targetUri.currentTarget){
             return $(targetUri.currentTarget).data('uri');
+        }
+    }
+
+    /**
+     * Requests new set of list elements and extends DOM list with them
+     */
+    function handleLoadMore() {
+        const $btn  = $(this);
+        const listUri   = getUriValue($btn.data('uri'));
+        const $listContainer = findListContainer(listUri);
+        const offset = $listContainer.find('ol').children('[id^=list-element]').length;
+        $btn.find('a').text('Loading...');
+        $btn.find('.icon-loop').toggleClass('rotate');
+        loadListElements(listUri, offset).then(newListData => {
+            $btn.find('a').text('Load more');
+            $btn.find('.icon-loop').toggleClass('rotate');
+            extendListWithNewElements(newListData, $listContainer, listUri);
+
+            if ($listContainer.find('form').length) {
+                showElementsEditControls($listContainer);
+            }
+        });
+    }
+
+    /**
+     * Loads a set of list elements
+     * @param {string} listUri - list uri
+     * @param {number} offset - element index to retrieve elements from
+     * @param {number} limit - number of list element to get (0 is no limit)
+     * @returns {Promise}
+     */
+    function loadListElements(listUri, offset, limit) {
+        const loadMoreUrl = urlUtil.route('getListElements', 'Lists', 'taoBackOffice');
+
+        const res = new Promise(resolve => {
+            $.getJSON(
+                loadMoreUrl,
+                { listUri, offset, limit },
+                response => {
+                    resolve(response.data);
+                }
+            );
+        });
+        return res;
+    }
+
+    /**
+     * Extends list node with new elements and hides pagination container if all elements are loaded
+     * @param {Object} param0
+     * @param {Object} [param0.elements] - new elements to include on list node
+     * @param {Object} [param0.totalCount] - total number of list elements
+     * @param {Object} listContainer - Jquery listContainer node
+     */
+    function extendListWithNewElements({elements, totalCount}, listContainer) {
+        const $list = listContainer.find('ol');
+        let offset = $list.children('[id^=list-element]').length;
+        let buffer = '';
+
+        for (let i = 0, id = '', len = elements.length; i < len; i++) {
+            id = `list-element_${offset++}_`;
+            buffer += `<li id=${id}><span class='list-element' id='${id}${elements[i].uri}'>${elements[i].label}</span></li>`;
+        }
+
+        $list.append(buffer).closest('.container-content').scrollTop($list.height());
+
+        if (offset === totalCount) {
+            listContainer.find('.pagination-container').hide();
         }
     }
 
@@ -334,6 +506,7 @@ define([
             $('.list-edit-btn').click(handleEditList);
             $('.list-delete-btn').click(handleDeleteList);
             $('.list-reload-btn').click(handleReloadList);
+            $('.load-more-btn').click(handleLoadMore);
         }
     };
 });
