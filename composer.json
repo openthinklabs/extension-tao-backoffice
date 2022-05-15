@@ -22,8 +22,8 @@
     "minimum-stability" : "dev",
     "require": {
         "openthinklabs/oatbox-extension-installer": "1.2.2",
-        "openthinklabs/generis" : "~15.19.2.1",
-        "openthinklabs/tao-core" : "~50.11.1.2"
+        "openthinklabs/generis" : ">=14.0.0",
+        "openthinklabs/tao-core" : ">=48.36.0"
     },
     "autoload" : {
         "psr-4" : {
