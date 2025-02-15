@@ -1,23 +1,36 @@
 msgid ""
 msgstr ""
-"Project-Id-Version: TAO 3.4.0-sprint117\n"
-"PO-Revision-Date: 2020-09-22T16:02:13\n"
+"Project-Id-Version: tao-open-source\n"
+"PO-Revision-Date: 2023-09-05 09:53\n"
 "Last-Translator: TAO Translation Team <translation@tao.lu>\n"
 "MIME-Version: 1.0\n"
-"Language: ja-JP\n"
+"Language: ja\n"
 "sourceLanguage: en-US\n"
-"targetLanguage: ja-JP\n"
-"Content-Type: text/plain; charset=utf-8\n"
+"targetLanguage: en-US\n"
+"Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "X-Poedit-Basepath: ../../\n"
 "X-Poedit-KeywordsList: __\n"
 "X-Poedit-SearchPath-0: .\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"X-Crowdin-Project: tao-open-source\n"
+"X-Crowdin-Project-ID: 590867\n"
+"X-Crowdin-Language: ja\n"
+"X-Crowdin-File: /[oat-sa.extension-tao-backoffice] develop/locales/en-US/messages.po\n"
+"X-Crowdin-File-ID: 659\n"
+"Language-Team: Japanese\n"
+
+msgid " Probably given list was already imported."
+msgstr " 指定されたリストはおそらく以前にインポートされた可能性があります。"
 
 msgid "Create a list"
-msgstr "リスト作成"
+msgstr "リストを作成"
+
+msgid "Create a remote list"
+msgstr "外部リストを作成"
 
 msgid "Create items, manage item and test banks, organize cohorts and deliveries, prepare reports, set up workflows."
-msgstr "アイテムの作成、アイテムとテストバンクの管理、デリバリの作成、レポートの準備、ワークフローの設定。"
+msgstr "アイテム作成、アイテム・テストバンク管理、デリバリ作成、レポート準備、ワークフロー設定"
 
 #, tao-public
 msgid "Delete"
@@ -33,8 +46,11 @@ msgstr "リスト編集"
 msgid "Edit Tree"
 msgstr "ツリー編集"
 
+msgid "Edit URI"
+msgstr "URIを編集"
+
 msgid "element"
-msgstr "エレメント"
+msgstr "要素"
 
 msgid "Element deleted"
 msgstr "エレメントが削除されました"
@@ -56,11 +72,17 @@ msgstr "リスト"
 msgid "List deleted"
 msgstr "リストが削除されました"
 
+msgid "List failed to be reloaded"
+msgstr "リストの再読み込みに失敗しました。"
+
 msgid "List not deleted"
 msgstr "リストは削除されませんでした"
 
 msgid "List not saved"
 msgstr "リストは保存されませんでした"
+
+msgid "List reloaded"
+msgstr "リストは再読込されました"
 
 msgid "List saved"
 msgstr "リストを保存しました"
@@ -79,6 +101,13 @@ msgstr "このリストを削除します。よろしいですか？この操作
 msgid "Properties"
 msgstr "プロパティ"
 
+msgid "Reload this list"
+msgstr "このリストを再読み込み"
+
+#, tao-public
+msgid "Remote Lists"
+msgstr "リモートリスト"
+
 msgid "Save list"
 msgstr "リストを保存"
 
@@ -90,7 +119,10 @@ msgid "TAO Back Office"
 msgstr "TAOバックオフィス"
 
 msgid "Test Developers and Administrators"
-msgstr "テスト開発者と管理者"
+msgstr "テスト開発・管理"
+
+msgid "The list should contain unique URIs"
+msgstr "リストにはユニークなURLを指定してください。"
 
 msgid "The requested resource does not exist or has been deleted"
 msgstr "リクエストリソースはありません。削除されています。"
